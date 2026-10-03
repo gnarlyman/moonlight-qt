@@ -7,3 +7,20 @@ build/
 libs/
 config.tests/*/.qmake.stash
 config.tests/*/Makefile
+
+# In-tree qmake build output.
+# Upstream builds out-of-tree (hence build/ above), but this fork is built in
+# place, so without these every git status is full of generated files.
+.DS_Store
+.qmake.cache
+.qmake.stash
+config.log
+Makefile
+Makefile.Debug
+Makefile.Release
+release/
+debug/
+*.a
+Info.plist-e
+qml_qmlcache.qrc
+Moonlight.app/
