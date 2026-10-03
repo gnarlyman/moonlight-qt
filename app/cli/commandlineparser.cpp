@@ -371,6 +371,8 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addChoiceOption("capture-system-keys", "capture system key combos", m_CaptureSysKeysModeMap.keys());
     parser.addChoiceOption("video-codec", "video codec", m_VideoCodecMap.keys());
     parser.addChoiceOption("video-decoder", "video decoder", m_VideoDecoderMap.keys());
+    parser.addValueOption("kvm-input", "GLKVM host for hardware HID input redirection");
+    parser.addValueOption("kvm-token", "GLKVM auth token (prefer the GLKVM_TOKEN env var)");
 
     if (!parser.parse(args)) {
         parser.showError(parser.errorText());
@@ -423,6 +425,15 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     }
 
     // Resolve --packet-size option
+    // GLKVM input redirection: non-empty host opts in, and the default (empty)
+    // leaves stock Moonlight behaviour completely untouched.
+    if (parser.isSet("kvm-input")) {
+        preferences->kvmInputHost = parser.value("kvm-input");
+    }
+    if (parser.isSet("kvm-token")) {
+        preferences->kvmInputToken = parser.value("kvm-token");
+    }
+
     if (parser.isSet("packet-size")) {
         preferences->packetSize = parser.getIntOption("packet-size");
         if (preferences->packetSize < 1024) {

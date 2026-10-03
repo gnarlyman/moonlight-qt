@@ -43,6 +43,8 @@
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QQuickOpenGLUtils>
+
+#include "streaming/input/kvm/kvminput.h"
 #endif
 
 #define CONN_TEST_SERVER "qt.conntest.moonlight-stream.org"
@@ -1748,6 +1750,30 @@ void Session::setShouldExit(bool quitHostApp)
 
 void Session::start()
 {
+
+    // Set up KVM input redirection here, on the main thread. The hooks are
+    // invoked from the SDL input loop, which runs on this thread, and QWebSocket
+    // and QTimer are thread-affine -- so the transport must be created and
+    // driven here. Creating it on the connection thread (or driving it from the
+    // cleanup pool) silently breaks both mouse and keyboard.
+    if (!m_Preferences->kvmInputHost.isEmpty()) {
+        const QByteArray envToken = qgetenv("GLKVM_TOKEN");
+        const QString kvmToken = !m_Preferences->kvmInputToken.isEmpty()
+                ? m_Preferences->kvmInputToken
+                : QString::fromUtf8(envToken);
+
+        QString kvmError;
+        if (!KvmInput::instance()->start(m_Preferences->kvmInputHost, kvmToken, &kvmError)) {
+            // Fail loudly. Streaming on with a dead input path would look like
+            // "the game isn't responding" and hide the real cause.
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "KVM input failed: %s", qPrintable(kvmError));
+            emit stageFailed(tr("GLKVM input"), -1, kvmError);
+            return;
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "KVM input: redirected to %s",
+                    qPrintable(m_Preferences->kvmInputHost));
+    }
+
     // Wait for any old session to finish cleanup
     s_ActiveSessionSemaphore.acquire();
 
@@ -1784,6 +1810,13 @@ void Session::exec()
         delete m_InputHandler;
         m_InputHandler = nullptr;
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        // Release everything held on the KVM and uninstall the hooks. This must
+        // run on the MAIN thread: KvmInput's socket and timers live here, and the
+        // cleanup task below runs on the thread pool and cannot block back on us
+        // (Session::start() waits on s_ActiveSessionSemaphore, which that task
+        // releases -- blocking here would deadlock).
+        KvmInput::instance()->stop();
+
         QThreadPool::globalInstance()->start(new DeferredSessionCleanupTask(this));
         return;
     }
@@ -1871,6 +1904,13 @@ void Session::exec()
             delete m_InputHandler;
             m_InputHandler = nullptr;
             SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            // Release everything held on the KVM and uninstall the hooks. This must
+            // run on the MAIN thread: KvmInput's socket and timers live here, and the
+            // cleanup task below runs on the thread pool and cannot block back on us
+            // (Session::start() waits on s_ActiveSessionSemaphore, which that task
+            // releases -- blocking here would deadlock).
+            KvmInput::instance()->stop();
+
             QThreadPool::globalInstance()->start(new DeferredSessionCleanupTask(this));
             return;
         }
@@ -2375,5 +2415,12 @@ DispatchDeferredCleanup:
     // Cleanup can take a while, so dispatch it to a worker thread.
     // When it is complete, it will release our s_ActiveSessionSemaphore
     // reference.
+    // Release everything held on the KVM and uninstall the hooks. This must
+    // run on the MAIN thread: KvmInput's socket and timers live here, and the
+    // cleanup task below runs on the thread pool and cannot block back on us
+    // (Session::start() waits on s_ActiveSessionSemaphore, which that task
+    // releases -- blocking here would deadlock).
+    KvmInput::instance()->stop();
+
     QThreadPool::globalInstance()->start(new DeferredSessionCleanupTask(this));
 }

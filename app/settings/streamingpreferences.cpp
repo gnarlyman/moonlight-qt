@@ -41,6 +41,8 @@
 #define SER_GAMEPADMOUSE "gamepadmouse"
 #define SER_DEFAULTVER "defaultver"
 #define SER_PACKETSIZE "packetsize"
+#define SER_KVMINPUTHOST "kvminputhost"
+#define SER_KVMINPUTTOKEN "kvminputtoken"
 #define SER_DETECTNETBLOCKING "detectnetblocking"
 #define SER_SHOWPERFOVERLAY "showperfoverlay"
 #define SER_SWAPMOUSEBUTTONS "swapmousebuttons"
@@ -145,6 +147,10 @@ void StreamingPreferences::reload()
     detectNetworkBlocking = settings.value(SER_DETECTNETBLOCKING, true).toBool();
     showPerformanceOverlay = settings.value(SER_SHOWPERFOVERLAY, false).toBool();
     packetSize = settings.value(SER_PACKETSIZE, 0).toInt();
+
+    // Empty host == GLKVM input redirection disabled.
+    kvmInputHost = settings.value(SER_KVMINPUTHOST, QString()).toString();
+    kvmInputToken = settings.value(SER_KVMINPUTTOKEN, QString()).toString();
     swapMouseButtons = settings.value(SER_SWAPMOUSEBUTTONS, false).toBool();
     muteOnFocusLoss = settings.value(SER_MUTEONFOCUSLOSS, false).toBool();
     backgroundGamepad = settings.value(SER_BACKGROUNDGAMEPAD, false).toBool();
@@ -343,6 +349,8 @@ void StreamingPreferences::save()
     settings.setValue(SER_RICHPRESENCE, richPresence);
     settings.setValue(SER_GAMEPADMOUSE, gamepadMouse);
     settings.setValue(SER_PACKETSIZE, packetSize);
+    settings.setValue(SER_KVMINPUTHOST, kvmInputHost);
+    settings.setValue(SER_KVMINPUTTOKEN, kvmInputToken);
     settings.setValue(SER_DETECTNETBLOCKING, detectNetworkBlocking);
     settings.setValue(SER_SHOWPERFOVERLAY, showPerformanceOverlay);
     settings.setValue(SER_AUDIOCFG, static_cast<int>(audioConfig));

@@ -156,6 +156,8 @@ public:
     Q_PROPERTY(bool swapFaceButtons MEMBER swapFaceButtons NOTIFY swapFaceButtonsChanged)
     Q_PROPERTY(bool keepAwake MEMBER keepAwake NOTIFY keepAwakeChanged)
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
+    Q_PROPERTY(QString kvmInputHost MEMBER kvmInputHost NOTIFY kvmInputHostChanged)
+    Q_PROPERTY(QString kvmInputToken MEMBER kvmInputToken NOTIFY kvmInputTokenChanged)
     Q_PROPERTY(Language language MEMBER language NOTIFY languageChanged);
 
     Q_INVOKABLE bool retranslate();
@@ -189,6 +191,12 @@ public:
     bool swapFaceButtons;
     bool keepAwake;
     int packetSize;
+
+    // GLKVM input redirection. kvmInputHost empty means disabled, which is the
+    // default and leaves upstream behaviour completely untouched. The token may
+    // also be supplied out of band via the GLKVM_TOKEN environment variable.
+    QString kvmInputHost;
+    QString kvmInputToken;
     AudioConfig audioConfig;
     VideoCodecConfig videoCodecConfig;
     bool enableHdr;
@@ -236,6 +244,8 @@ signals:
     void swapFaceButtonsChanged();
     void captureSysKeysModeChanged();
     void keepAwakeChanged();
+    void kvmInputHostChanged();
+    void kvmInputTokenChanged();
     void languageChanged();
     void rendererSelectionChanged();
 
