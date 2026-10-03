@@ -15,6 +15,12 @@ OverlayManager::OverlayManager() :
     m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xCC, 0x00, 0x00, 0xFF};
     m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 36;
 
+    // Deliberately the smallest and quietest of the three. It is on screen for
+    // the whole time input is being redirected, so it must not compete with the
+    // game for attention.
+    m_Overlays[OverlayType::OverlayKvmInput].color = {0xA0, 0xE0, 0xA0, 0xFF};
+    m_Overlays[OverlayType::OverlayKvmInput].fontSize = 16;
+
     // While TTF will usually not be initialized here, it is valid for that not to
     // be the case, since Session destruction is deferred and could overlap with
     // the lifetime of a new Session object.
@@ -90,11 +96,31 @@ void OverlayManager::setOverlayTextUpdated(OverlayType type)
     }
 }
 
+void OverlayManager::showOverlayTextTimed(OverlayType type, const char* text, Uint32 durationMs)
+{
+    updateOverlayText(type, text);
+    setOverlayState(type, true);
+    m_Overlays[type].expiry = SDL_GetTicks() + durationMs;
+}
+
+void OverlayManager::updateOverlayExpiry(Uint32 nowMs)
+{
+    for (int i = 0; i < OverlayType::OverlayMax; i++) {
+        if (m_Overlays[i].expiry != 0 && SDL_TICKS_PASSED(nowMs, m_Overlays[i].expiry)) {
+            // setOverlayState(false) clears the expiry for us.
+            setOverlayState((OverlayType)i, false);
+        }
+    }
+}
+
 void OverlayManager::setOverlayState(OverlayType type, bool enabled)
 {
     bool stateChanged = m_Overlays[type].enabled != enabled;
 
     m_Overlays[type].enabled = enabled;
+
+    // An explicit state change supersedes a pending auto-hide.
+    m_Overlays[type].expiry = 0;
 
     if (stateChanged) {
         if (!enabled) {
@@ -114,6 +140,19 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
+
+    // Catch up any overlay that was enabled before there was a renderer to draw
+    // it. notifyOverlayUpdated() bails out when m_Renderer is null, so without
+    // this an overlay enabled early never gets a surface built and silently
+    // never appears. (The debug overlay escapes this only because its stats
+    // tick re-notifies every second; a one-shot overlay does not.)
+    if (renderer != nullptr) {
+        for (int i = 0; i < OverlayType::OverlayMax; i++) {
+            if (m_Overlays[i].enabled) {
+                notifyOverlayUpdated((OverlayType)i);
+            }
+        }
+    }
 }
 
 void OverlayManager::notifyOverlayUpdated(OverlayType type)

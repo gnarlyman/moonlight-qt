@@ -761,7 +761,8 @@ void VAAPIRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             overlayRect.x = 0;
             overlayRect.y = -newSurface->h;
         }
-        else if (type == Overlay::OverlayDebug) {
+        else if (type == Overlay::OverlayDebug ||
+                 type == Overlay::OverlayKvmInput) {
             // Top left
             overlayRect.x = 0;
             overlayRect.y = 0;

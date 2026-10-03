@@ -1187,7 +1187,8 @@ bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int w
         renderRect.x = 0;
         renderRect.y = 0;
     }
-    else if (type == Overlay::OverlayDebug) {
+    else if (type == Overlay::OverlayDebug ||
+                 type == Overlay::OverlayKvmInput) {
         // Top left
         renderRect.x = 0;
         renderRect.y = m_DisplayHeight - height;

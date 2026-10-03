@@ -663,7 +663,8 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
         renderRect.x = 0;
         renderRect.y = m_DisplayHeight - newSurface->h;
     }
-    else if (type == Overlay::OverlayDebug) {
+    else if (type == Overlay::OverlayDebug ||
+                 type == Overlay::OverlayKvmInput) {
         // Top left
         renderRect.x = 0;
         renderRect.y = 0;

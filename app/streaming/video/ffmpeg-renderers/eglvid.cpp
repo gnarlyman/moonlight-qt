@@ -209,7 +209,8 @@ void EGLRenderer::renderOverlay(Overlay::OverlayType type, int viewportWidth, in
             overlayRect.x = 0;
             overlayRect.y = 0;
         }
-        else if (type == Overlay::OverlayDebug) {
+        else if (type == Overlay::OverlayDebug ||
+                 type == Overlay::OverlayKvmInput) {
             // Top left
             overlayRect.x = 0;
             overlayRect.y = viewportHeight - newSurface->h;
