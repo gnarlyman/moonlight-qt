@@ -1,3 +1,6 @@
+// How long the "which input method is live" notice stays on screen.
+#define KVM_INPUT_NOTICE_MS 3000
+
 #include "session.h"
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
@@ -45,6 +48,7 @@
 #include <QQuickOpenGLUtils>
 
 #include "streaming/input/kvm/kvminput.h"
+#include "streaming/input/kvm/kvmcredentials.h"
 #endif
 
 #define CONN_TEST_SERVER "qt.conntest.moonlight-stream.org"
@@ -1560,6 +1564,16 @@ void Session::notifyMouseEmulationMode(bool enabled)
     }
 }
 
+void Session::notifyKvmInputMode(bool redirecting)
+{
+    // Its own slot, so no arbitration is needed against the connection warning
+    // or the gamepad-mouse banner. Name the method that is now live, then get
+    // out of the way.
+    m_OverlayManager.showOverlayTextTimed(Overlay::OverlayKvmInput,
+        redirecting ? "Input: GLKVM" : "Input: Moonlight",
+        KVM_INPUT_NOTICE_MS);
+}
+
 class AsyncConnectionStartThread : public QThread
 {
 public:
@@ -1762,8 +1776,20 @@ void Session::start()
                 ? m_Preferences->kvmInputToken
                 : QString::fromUtf8(envToken);
 
+        // Presentation belongs to the session, not the transport. Connected
+        // BEFORE start(), which emits immediately.
+        connect(KvmInput::instance(), &KvmInput::redirectChanged,
+                this, &Session::notifyKvmInputMode);
+
+        // Username for automatic token renewal; the password itself comes from
+        // the platform secret store, never from settings.
+        const QString kvmUser = !m_Preferences->kvmInputUser.isEmpty()
+                ? m_Preferences->kvmInputUser
+                : KvmCredentials::userFromEnvironment();
+
         QString kvmError;
-        if (!KvmInput::instance()->start(m_Preferences->kvmInputHost, kvmToken, &kvmError)) {
+        if (!KvmInput::instance()->start(m_Preferences->kvmInputHost, kvmUser,
+                                         kvmToken, &kvmError)) {
             // Fail loudly. Streaming on with a dead input path would look like
             // "the game isn't responding" and hide the real cause.
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "KVM input failed: %s", qPrintable(kvmError));
@@ -2004,6 +2030,11 @@ void Session::exec()
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
     for (;;) {
+        // Retire timed overlay messages (the input-method notice). This is the
+        // SDL main thread, and the loop wakes at least once a second via the
+        // wait timeout below, plus on every event.
+        m_OverlayManager.updateOverlayExpiry(SDL_GetTicks());
+
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,

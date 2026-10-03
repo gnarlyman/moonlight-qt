@@ -190,6 +190,7 @@ SOURCES += \
     streaming/input/input.cpp \
     streaming/input/keyboard.cpp \
     streaming/input/kvm/kvminput.cpp \
+    streaming/input/kvm/kvmcredentials.cpp \
     streaming/input/mouse.cpp \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
@@ -230,6 +231,7 @@ HEADERS += \
     settings/streamingpreferences.h \
     streaming/input/input.h \
     streaming/input/kvm/kvminput.h \
+    streaming/input/kvm/kvmcredentials.h \
     streaming/session.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \
@@ -356,6 +358,16 @@ libplacebo {
     macx {
         SOURCES += streaming/video/ffmpeg-renderers/plvk_objc.mm
     }
+}
+
+# GLKVM password storage. One backend per platform; the auth logic is shared and
+# never touches an OS keychain API. Add further backends here as they appear.
+macx {
+    SOURCES += streaming/input/kvm/kvmcredentials_mac.mm
+    LIBS += -framework Security -framework Foundation
+}
+!macx {
+    SOURCES += streaming/input/kvm/kvmcredentials_none.cpp
 }
 config_EGL {
     message(EGL renderer selected)

@@ -158,6 +158,7 @@ public:
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
     Q_PROPERTY(QString kvmInputHost MEMBER kvmInputHost NOTIFY kvmInputHostChanged)
     Q_PROPERTY(QString kvmInputToken MEMBER kvmInputToken NOTIFY kvmInputTokenChanged)
+    Q_PROPERTY(QString kvmInputUser MEMBER kvmInputUser NOTIFY kvmInputUserChanged)
     Q_PROPERTY(Language language MEMBER language NOTIFY languageChanged);
 
     Q_INVOKABLE bool retranslate();
@@ -197,6 +198,9 @@ public:
     // also be supplied out of band via the GLKVM_TOKEN environment variable.
     QString kvmInputHost;
     QString kvmInputToken;
+    // Username for automatic token renewal. Not secret, so it is an ordinary
+    // setting; the password lives in the platform secret store.
+    QString kvmInputUser;
     AudioConfig audioConfig;
     VideoCodecConfig videoCodecConfig;
     bool enableHdr;
@@ -246,6 +250,7 @@ signals:
     void keepAwakeChanged();
     void kvmInputHostChanged();
     void kvmInputTokenChanged();
+    void kvmInputUserChanged();
     void languageChanged();
     void rendererSelectionChanged();
 

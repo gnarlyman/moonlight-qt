@@ -63,12 +63,58 @@ public:
      * @param error set to a human-readable reason on failure
      * @return true if the transport was started and hooks installed
      */
-    bool start(const QString& host, const QString& token, QString* error);
+    /**
+     * @param host    device hostname or address
+     * @param user    KVM username, for automatic token renewal (may be empty)
+     * @param token   explicit token; may be empty, in which case a login is
+     *                attempted if credentials are available
+     */
+    bool start(const QString& host, const QString& user, const QString& token, QString* error);
 
     /** Release anything still held, uninstall hooks, close the socket. */
     void stop();
 
     bool isActive() const { return m_Active.load(); }
+
+    /**
+     * Switch between the GLKVM path and the normal Moonlight (GameStream) path,
+     * leaving the transport connected either way.
+     *
+     * Turning redirection OFF releases everything the device still has held
+     * WHILE the hooks are installed, so those key-ups actually reach the KVM
+     * rather than being stranded on the controlled machine.
+     *
+     * The caller is responsible for the GameStream side: call raiseAllKeys()
+     * before invoking this, so nothing is left held on the path being left.
+     *
+     * @return true if now redirecting to the KVM, false if now using Moonlight
+     */
+    bool setRedirect(bool redirecting);
+
+    /**
+     * Force the device's mouse output to usb_rel.
+     *
+     * The output is a RUNTIME setting, and the KVM web UI switches it to absolute
+     * when it connects. In absolute mode kvmd discards mouse_relative events, so
+     * the mouse goes silently dead -- which is exactly what happened on
+     * 2026-10-03 and why "it worked last night" stopped being true. Assert the
+     * mode this transport needs rather than assuming it.
+     */
+    bool assertRelativeMouse(const QString& token, QString* error);
+
+    /** Open the WebSocket and wait for the upgrade. */
+    bool openSocket(const QString& token, QString* error);
+
+    /**
+     * Mint a fresh token with POST /api/auth/login, using the stored password.
+     *
+     * This is what makes token expiry a non-event: rather than being told to go
+     * and copy a cookie out of a browser, the client renews itself. The password
+     * comes from the platform secret store; see kvmcredentials.h.
+     */
+    bool login(QString* token, QString* error);
+    bool toggleRedirect() { return setRedirect(!m_Redirecting.load()); }
+    bool isRedirecting() const { return m_Redirecting.load(); }
 
     // --- hook targets; see KvmInputHooks.h. Callable from ANY thread. ----
     int mouseMove(short deltaX, short deltaY);
@@ -79,10 +125,21 @@ public:
     int highResHScroll(short scrollAmount);
     int dropInput(const char* kind);
 
+signals:
+    /**
+     * Emitted when input starts or stops being redirected to the KVM. Lets the
+     * session present the change without the transport knowing about overlays.
+     *
+     * Only ever emitted on the main thread (start() and setRedirect() both run
+     * there), so a direct connection is safe to touch UI state from.
+     */
+    void redirectChanged(bool redirecting);
+
 private slots:
     void flushPendingInput();
     void onConnected();
     void onDisconnected();
+    void onTextMessageReceived(const QString& message);
     void onSslErrors(const QList<QSslError>& errors);
     void onError(QAbstractSocket::SocketError error);
 
@@ -114,9 +171,14 @@ private:
     QTimer m_FlushTimer;
 
     std::atomic<bool> m_Active;
+    std::atomic<bool> m_Redirecting;
+    // Device mouse mode, from the `hid` state event. Only used to report a change
+    // that would otherwise silently kill the mouse.
+    std::atomic<bool> m_MouseAbsolute;
     bool m_Connected;
     bool m_WarnedNotConnected;
     QString m_Host;
+    QString m_User;
     QString m_LastError;
 
     // Guarded by m_Mutex: appended by the hooks on any thread, drained by the

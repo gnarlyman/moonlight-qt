@@ -4,12 +4,16 @@
  */
 
 #include "kvminput.h"
+#include "kvmcredentials.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkCookie>
+#include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QThread>
 #include <QUrl>
@@ -79,11 +83,73 @@ static int kvmHookDropInput(const char* kind)
     return s_Instance ? s_Instance->dropInput(kind) : 0;
 }
 
+// The table handed to moonlight-common-c. Held at file scope so both start()
+// and toggleRedirect() can install it.
+static const KVM_INPUT_HOOKS k_KvmHooks = {
+    kvmHookMouseMove,
+    kvmHookMousePosition,
+    kvmHookMouseButton,
+    kvmHookKeyboard,
+    kvmHookHighResScroll,
+    kvmHookHighResHScroll,
+    kvmHookDropInput,
+};
+
+/**
+ * Switch between the GLKVM path and the normal Moonlight path without
+ * disconnecting.
+ *
+ * ORDER MATTERS. Turning redirection off sends the key-ups for everything the
+ * device holds BEFORE removing the hooks, so those releases travel to the KVM.
+ * Remove the hooks first and the releases would go over GameStream instead,
+ * leaving every held key stuck down on the controlled machine -- the exact
+ * failure this project exists to avoid.
+ */
+bool KvmInput::setRedirect(bool redirecting)
+{
+    if (!m_Active.load()) {
+        return false;
+    }
+
+    if (redirecting == m_Redirecting.load()) {
+        return redirecting;
+    }
+
+    if (!redirecting) {
+        // Release while the hooks are still installed, so the key-ups for
+        // everything the device holds actually reach it. Remove the hooks first
+        // and those releases would go over GameStream instead, stranding every
+        // held key down on the controlled machine.
+        releaseAllHeld();
+
+        // Anything still queued was never sent, so there is nothing to unwind.
+        {
+            QMutexLocker locker(&m_Mutex);
+            m_PendingDeltaX = m_PendingDeltaY = 0;
+            m_PendingWheelV = m_PendingWheelH = 0;
+            m_PendingActions.clear();
+        }
+
+        LiSetKvmInputHooks(nullptr);
+        qInfo() << "KVM input: switched to the normal Moonlight input path";
+    }
+    else {
+        LiSetKvmInputHooks(&k_KvmHooks);
+        qInfo() << "KVM input: switched to the GLKVM input path";
+    }
+
+    m_Redirecting.store(redirecting);
+    emit redirectChanged(redirecting);
+    return redirecting;
+}
+
 // ---------------------------------------------------------------------------
 
 KvmInput::KvmInput(QObject* parent)
     : QObject(parent),
       m_Active(false),
+      m_Redirecting(false),
+      m_MouseAbsolute(false),
       m_Connected(false),
       m_WarnedNotConnected(false),
       m_PendingDeltaX(0),
@@ -99,6 +165,7 @@ KvmInput::KvmInput(QObject* parent)
 
     connect(&m_Socket, &QWebSocket::connected, this, &KvmInput::onConnected);
     connect(&m_Socket, &QWebSocket::disconnected, this, &KvmInput::onDisconnected);
+    connect(&m_Socket, &QWebSocket::textMessageReceived, this, &KvmInput::onTextMessageReceived);
     connect(&m_Socket, &QWebSocket::errorOccurred, this, &KvmInput::onError);
     connect(&m_Socket, &QWebSocket::sslErrors, this, &KvmInput::onSslErrors);
 }
@@ -122,31 +189,202 @@ KvmInput* KvmInput::instance()
     return s_Instance;
 }
 
-bool KvmInput::start(const QString& host, const QString& token, QString* error)
+bool KvmInput::assertRelativeMouse(const QString& token, QString* error)
 {
-    if (m_Active.load()) {
+    QUrl url;
+    url.setScheme(QStringLiteral("https"));
+    url.setHost(m_Host);
+    url.setPath(QStringLiteral("/api/hid/set_params"));
+
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("mouse_output"), QStringLiteral("usb_rel"));
+    if (!token.isEmpty()) {
+        query.addQueryItem(QStringLiteral("auth_token"), token);
+    }
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setRawHeader("token", token.toUtf8());
+    QSslConfiguration ssl = request.sslConfiguration();
+    ssl.setPeerVerifyMode(QSslSocket::VerifyNone);
+    request.setSslConfiguration(ssl);
+
+    QNetworkAccessManager nam;
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+
+    QNetworkReply* reply = nam.post(request, QByteArray());
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(KVM_CONNECT_TIMEOUT_MS);
+    loop.exec();
+
+    bool ok = false;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        ok = obj.value(QStringLiteral("ok")).toBool();
+    }
+    else if (error != nullptr) {
+        *error = reply->errorString();
+    }
+    reply->deleteLater();
+    return ok;
+}
+
+void KvmInput::onTextMessageReceived(const QString& message)
+{
+    // kvmd broadcasts `hid` state on connect and whenever the active output
+    // changes -- including when another client, such as the KVM web UI, switches
+    // the mouse to absolute. That would silently stop the mouse working, so make
+    // it visible instead of leaving it to be discovered mid-game.
+    const QJsonObject event = QJsonDocument::fromJson(message.toUtf8()).object();
+    if (event.value(QStringLiteral("event_type")).toString() != QLatin1String("hid")) {
+        return;
+    }
+
+    const QJsonObject mouse = event.value(QStringLiteral("event")).toObject()
+                                   .value(QStringLiteral("mouse")).toObject();
+    if (!mouse.contains(QStringLiteral("absolute"))) {
+        return;
+    }
+
+    const bool absolute = mouse.value(QStringLiteral("absolute")).toBool();
+    if (absolute == m_MouseAbsolute.load()) {
+        return;
+    }
+    m_MouseAbsolute.store(absolute);
+
+    if (absolute) {
+        qWarning() << "KVM input: device switched to ABSOLUTE mouse mode."
+                      " mouse_relative events are discarded in that mode, so the"
+                      " mouse will not respond. The KVM web UI sets absolute when"
+                      " it connects; switch the output back to usb_rel.";
+    }
+    else {
+        qInfo() << "KVM input: device is in relative mouse mode";
+    }
+}
+
+/**
+ * Does this connect failure look like the device rejecting our credentials?
+ *
+ * A handshake rejection surfaces in more than one shape. Sometimes it carries
+ * the status code ("... http status code: 403 (Forbidden)"), but when the server
+ * offers an auth challenge QWebSocket reports an opaque message instead:
+ *
+ *     Unsupported WWW-Authenticate challenges encountered.
+ *
+ * Matching only on "401"/"403" therefore silently skipped automatic renewal --
+ * which is exactly what happened on 2026-10-03, and why a revoked token looked
+ * like a plain connection failure. Keep this judgement in one place.
+ */
+static bool looksLikeAuthRejection(const QString& error)
+{
+    return error.contains(QLatin1String("401")) ||
+           error.contains(QLatin1String("403")) ||
+           error.contains(QLatin1String("Unauthorized"), Qt::CaseInsensitive) ||
+           error.contains(QLatin1String("Forbidden"), Qt::CaseInsensitive) ||
+           error.contains(QLatin1String("WWW-Authenticate"), Qt::CaseInsensitive);
+}
+
+// The token is returned only as a cookie: the JSON body is {"ok":true,"result":{}}
+// and carries nothing useful.
+static QString tokenFromLoginReply(QNetworkReply* reply)
+{
+    const QVariant header = reply->header(QNetworkRequest::SetCookieHeader);
+    const QList<QNetworkCookie> cookies = header.value<QList<QNetworkCookie>>();
+    for (const QNetworkCookie& cookie : cookies) {
+        if (cookie.name() == QByteArrayLiteral("auth_token")) {
+            return QString::fromUtf8(cookie.value());
+        }
+    }
+
+    // Fall back to the raw header, in case a cookie jar consumed the parsed form.
+    const QByteArray raw = reply->rawHeader(QByteArrayLiteral("Set-Cookie"));
+    for (const QByteArray& part : raw.split(';')) {
+        const QByteArray trimmed = part.trimmed();
+        if (trimmed.startsWith(QByteArrayLiteral("auth_token="))) {
+            return QString::fromUtf8(trimmed.mid(int(sizeof("auth_token=")) - 1));
+        }
+    }
+    return QString();
+}
+
+bool KvmInput::login(QString* token, QString* error)
+{
+    if (m_User.isEmpty()) {
         if (error) {
-            *error = tr("KVM input is already running");
+            *error = tr("no username configured (--kvm-user or GLKVM_USER)");
         }
         return false;
     }
 
-    if (host.isEmpty()) {
+    const QString password = KvmCredentials::password(m_Host, m_User);
+    if (password.isEmpty()) {
         if (error) {
-            *error = tr("No GLKVM host specified");
+            *error = tr("no password stored for %1@%2 (see kvmcredentials.h)")
+                         .arg(m_User, m_Host);
         }
         return false;
-    }
-
-    m_Host = host;
-    {
-        QMutexLocker locker(&m_Mutex);
-        m_LastError.clear();
     }
 
     QUrl url;
+    url.setScheme(QStringLiteral("https"));
+    url.setHost(m_Host);
+    url.setPath(QStringLiteral("/api/auth/login"));
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/x-www-form-urlencoded"));
+    QSslConfiguration ssl = request.sslConfiguration();
+    ssl.setPeerVerifyMode(QSslSocket::VerifyNone);
+    request.setSslConfiguration(ssl);
+
+    // kvmd takes form data and the password field is `passwd`, not `password`
+    // -- confirmed against the KVM web UI's own login call, {user, passwd}.
+    QUrlQuery form;
+    form.addQueryItem(QStringLiteral("user"), m_User);
+    form.addQueryItem(QStringLiteral("passwd"), password);
+
+    QNetworkAccessManager nam;
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+
+    QNetworkReply* reply = nam.post(request, form.toString(QUrl::FullyEncoded).toUtf8());
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(KVM_CONNECT_TIMEOUT_MS);
+    loop.exec();
+
+    QString fresh;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        fresh = tokenFromLoginReply(reply);
+    }
+    else if (error) {
+        *error = reply->errorString();
+    }
+    reply->deleteLater();
+
+    if (fresh.isEmpty()) {
+        if (error != nullptr && error->isEmpty()) {
+            *error = tr("the device accepted the login but returned no token");
+        }
+        return false;
+    }
+
+    if (token != nullptr) {
+        *token = fresh;
+    }
+    return true;
+}
+
+bool KvmInput::openSocket(const QString& token, QString* error)
+{
+    QUrl url;
     url.setScheme(QStringLiteral("wss"));
-    url.setHost(host);
+    url.setHost(m_Host);
     url.setPath(QStringLiteral("/api/ws"));
 
     QUrlQuery query;
@@ -176,6 +414,9 @@ bool KvmInput::start(const QString& host, const QString& token, QString* error)
     ssl.setPeerVerifyMode(QSslSocket::VerifyNone);
     request.setSslConfiguration(ssl);
 
+    // A retry reuses this socket, so make sure it carries no previous state.
+    m_Socket.abort();
+    m_Connected = false;
     m_Socket.open(request);
 
     // Wait for the upgrade so a bad host or token fails here, loudly, rather
@@ -202,28 +443,123 @@ bool KvmInput::start(const QString& host, const QString& token, QString* error)
     if (!m_Connected) {
         if (error) {
             QMutexLocker locker(&m_Mutex);
-            *error = timedOut
-                ? tr("Timed out connecting to %1").arg(host)
-                : tr("Could not connect to %1: %2").arg(host, m_LastError);
+            if (m_LastError.contains(QStringLiteral("403")) ||
+                    m_LastError.contains(QLatin1String("WWW-Authenticate"), Qt::CaseInsensitive)) {
+                // The common one. A kvmd token is an in-memory session
+                // credential with a sliding expiry, so it dies from disuse and
+                // every failure after that looks identical from the outside.
+                *error = tr("GLKVM rejected the auth token (403 Forbidden).\n"
+                            "KVM tokens expire. Set --kvm-user / GLKVM_USER and "
+                            "save the password to renew automatically, or supply "
+                            "a fresh --kvm-token / GLKVM_TOKEN.");
+            }
+            else if (m_LastError.contains(QStringLiteral("401"))) {
+                *error = tr("GLKVM requires an auth token (401 Unauthorized). "
+                            "Set --kvm-token / GLKVM_TOKEN, or --kvm-user with a "
+                            "stored password.");
+            }
+            else {
+                *error = timedOut
+                    ? tr("Timed out connecting to %1").arg(m_Host)
+                    : tr("Could not connect to %1: %2").arg(m_Host, m_LastError);
+            }
         }
         m_Socket.abort();
         return false;
     }
 
+    return true;
+}
+
+bool KvmInput::start(const QString& host, const QString& user, const QString& token, QString* error)
+{
+    if (m_Active.load()) {
+        if (error) {
+            *error = tr("KVM input is already running");
+        }
+        return false;
+    }
+
+    if (host.isEmpty()) {
+        if (error) {
+            *error = tr("No GLKVM host specified");
+        }
+        return false;
+    }
+
+    m_Host = host;
+    m_User = user;
+    {
+        QMutexLocker locker(&m_Mutex);
+        m_LastError.clear();
+    }
+
+    QString effectiveToken = token;
+
+    if (!openSocket(effectiveToken, error)) {
+        // A rejected token is the one failure worth retrying, because we can
+        // usually mint a fresh one. This is what removes the "token expired
+        // again" ritual: authenticate once, and the client renews itself.
+        bool rejected;
+        {
+            QMutexLocker locker(&m_Mutex);
+            rejected = looksLikeAuthRejection(m_LastError);
+        }
+        if (!rejected) {
+            return false;
+        }
+
+        {
+            QMutexLocker locker(&m_Mutex);
+            qWarning() << "KVM input: handshake rejected, attempting automatic renewal. "
+                          "Raw error:" << m_LastError;
+        }
+
+        QString freshToken;
+        QString loginError;
+        if (!login(&freshToken, &loginError)) {
+            // Keep the rejection as the headline -- it is the actionable part --
+            // but say why the automatic recovery did not happen.
+            if (error) {
+                *error += tr("\n\nAutomatic renewal did not run: %1").arg(loginError);
+            }
+            return false;
+        }
+
+        if (!openSocket(freshToken, error)) {
+            return false;
+        }
+
+        effectiveToken = freshToken;
+        qInfo() << "KVM input: renewed an expired token with stored credentials";
+    }
+
+    // The device's mouse output is a runtime setting that another client can
+    // change; without relative mode every mouse event we send is discarded.
+    QString modeError;
+    if (assertRelativeMouse(effectiveToken, &modeError)) {
+        m_MouseAbsolute.store(false);
+        qInfo() << "KVM input: asserted relative mouse mode (usb_rel)";
+    }
+    else {
+        // Not fatal: the keyboard and buttons still work, and refusing to stream
+        // over a mouse-mode call would be disproportionate. But say so loudly,
+        // because the mouse will not respond.
+        qWarning() << "KVM input: could not assert relative mouse mode:" << modeError
+                   << "-- the mouse may not respond.";
+    }
+
     // Install the hooks last, so we never intercept input we cannot deliver.
-    static const KVM_INPUT_HOOKS hooks = {
-        kvmHookMouseMove,
-        kvmHookMousePosition,
-        kvmHookMouseButton,
-        kvmHookKeyboard,
-        kvmHookHighResScroll,
-        kvmHookHighResHScroll,
-        kvmHookDropInput,
-    };
+    // (Installed/removed by toggleRedirect() too, hence file scope.)
+    LiSetKvmInputHooks(&k_KvmHooks);
+    m_Redirecting.store(true);
 
     m_Active.store(true);
-    LiSetKvmInputHooks(&hooks);
     m_FlushTimer.start();
+
+    // May happen before the video renderer exists; OverlayManager::setOverlayRenderer()
+    // catches enabled overlays up when it is attached.
+    emit redirectChanged(true);
 
     return true;
 }
@@ -236,6 +572,7 @@ void KvmInput::stop()
 
     // Stop accepting input first.
     LiSetKvmInputHooks(nullptr);
+    m_Redirecting.store(false);
     m_Active.store(false);
 
     m_FlushTimer.stop();

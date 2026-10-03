@@ -169,6 +169,9 @@ private:
 
     void notifyMouseEmulationMode(bool enabled);
 
+    // Show/hide the small indicator of which input path is live.
+    void notifyKvmInputMode(bool redirecting);
+
     void updateOptimalWindowDisplayMode();
 
     enum class DecoderAvailability {

@@ -373,6 +373,10 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addChoiceOption("video-decoder", "video decoder", m_VideoDecoderMap.keys());
     parser.addValueOption("kvm-input", "GLKVM host for hardware HID input redirection");
     parser.addValueOption("kvm-token", "GLKVM auth token (prefer the GLKVM_TOKEN env var)");
+    parser.addValueOption("kvm-user",
+                          "GLKVM username, to renew expired tokens automatically"
+                          " (prefer the GLKVM_USER env var; the password comes from"
+                          " the system keychain or GLKVM_PASSWORD)");
 
     if (!parser.parse(args)) {
         parser.showError(parser.errorText());
@@ -432,6 +436,9 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     }
     if (parser.isSet("kvm-token")) {
         preferences->kvmInputToken = parser.value("kvm-token");
+    }
+    if (parser.isSet("kvm-user")) {
+        preferences->kvmInputUser = parser.value("kvm-user");
     }
 
     if (parser.isSet("packet-size")) {

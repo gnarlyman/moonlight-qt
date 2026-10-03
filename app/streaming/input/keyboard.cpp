@@ -1,3 +1,4 @@
+#include "streaming/input/kvm/kvminput.h"
 #include "streaming/session.h"
 
 #include <Limelight.h>
@@ -160,6 +161,22 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         quitExitEvent.type = SDL_QUIT;
         quitExitEvent.quit.timestamp = SDL_GetTicks();
         SDL_PushEvent(&quitExitEvent);
+        break;
+
+    case KeyComboToggleKvmInput:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected GLKVM input toggle combo");
+
+        // Release on the path we are LEAVING before switching. Without this, a
+        // key held across the switch has its key-up delivered on the other
+        // path, and stays stuck down on the controlled machine.
+        //   raiseAllKeys() covers the GameStream side; the KVM side is released
+        //   by the transport itself, while its hooks are still installed.
+        raiseAllKeys();
+
+        // Manual override. Capture state re-asserts the automatic rule (see
+        // SdlInputHandler::setCaptureActive) on the next focus change.
+        KvmInput::instance()->toggleRedirect();
         break;
 
     case KeyComboToggleKeyboardGrab:

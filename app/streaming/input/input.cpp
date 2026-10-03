@@ -135,6 +135,15 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].scanCode = SDL_SCANCODE_K;
     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].enabled = WMUtils::isRunningDesktopEnvironment();
 
+    // Switch between the GLKVM input path and the normal Moonlight one. Keyed on
+    // 'i' for "input" -- 'k' is already keyboard grab, and c/d/e/l/m/q/s/v/x/z are
+    // taken by other combos. Enabled only when this session actually has a KVM
+    // transport, so stock Moonlight is left completely untouched.
+    m_SpecialKeyCombos[KeyComboToggleKvmInput].keyCombo = KeyComboToggleKvmInput;
+    m_SpecialKeyCombos[KeyComboToggleKvmInput].keyCode = SDLK_i;
+    m_SpecialKeyCombos[KeyComboToggleKvmInput].scanCode = SDL_SCANCODE_I;
+    m_SpecialKeyCombos[KeyComboToggleKvmInput].enabled = !prefs.kvmInputHost.isEmpty();
+
     m_OldIgnoreDevices = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
     m_OldIgnoreDevicesExcept = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT);
 
